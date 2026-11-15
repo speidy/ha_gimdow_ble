@@ -53,6 +53,8 @@ def _make_manager(
     transition_timeout: float = 0,
     has_door_sensor: bool = False,
     on_demand: bool = False,
+    assume_locked_after: int = 0,
+    on_assumed_state: MagicMock | None = None,
 ) -> tuple[GimdowBLELockManager, MagicMock, MagicMock]:
     """Return (manager, hass_mock, device_mock)."""
     device = MagicMock()
@@ -77,9 +79,12 @@ def _make_manager(
         get_auto_lock=lambda: virtual_auto_lock,
         has_door_sensor=has_door_sensor,
         on_demand=on_demand,
+        assume_locked_after=assume_locked_after,
     )
 
-    mgr = GimdowBLELockManager(device, hass, config, MagicMock())
+    mgr = GimdowBLELockManager(
+        device, hass, config, MagicMock(), on_assumed_state=on_assumed_state
+    )
     mgr._last_known_state = last_known_state
     return mgr, hass, device
 
@@ -1243,3 +1248,115 @@ class TestOnDemandAlwaysSends:
         mgr, _, device = _make_manager(is_locked_return=False, on_demand=False)
         await mgr.unlock()
         device.send_control_datapoint.assert_not_awaited()
+
+
+_CALL_LATER = "custom_components.gimdow_ble.gimdow_ble.lock_manager.async_call_later"
+
+
+class TestAssumeLockedAfter:
+    """On-demand mode: the lock's own auto-lock is never reported, so after
+    ``assume_locked_after`` seconds unlocked the lock is assumed locked."""
+
+    def test_unlock_seen_starts_timer(self) -> None:
+        mgr, hass, _ = _make_manager(on_demand=True, assume_locked_after=40)
+        with patch(_CALL_LATER, return_value=MagicMock()) as later:
+            mgr.on_coordinator_update(False)
+        later.assert_called_once_with(hass, 40, mgr._assume_locked_callback)
+        assert mgr._assume_locked_timer is not None
+
+    def test_off_when_zero(self) -> None:
+        mgr, _, _ = _make_manager(on_demand=True, assume_locked_after=0)
+        with patch(_CALL_LATER) as later:
+            mgr.on_coordinator_update(False)
+        later.assert_not_called()
+
+    def test_off_in_persistent_mode(self) -> None:
+        mgr, _, _ = _make_manager(on_demand=False, assume_locked_after=40)
+        with patch(_CALL_LATER) as later:
+            mgr.on_coordinator_update(False)
+        later.assert_not_called()
+
+    def test_unrelated_update_keeps_running_timer(self) -> None:
+        mgr, _, _ = _make_manager(on_demand=True, assume_locked_after=40)
+        with patch(_CALL_LATER, return_value=MagicMock()) as later:
+            mgr.on_coordinator_update(False)
+            first = mgr._assume_locked_timer
+            mgr.on_coordinator_update(False)  # e.g. a battery DP update
+        assert later.call_count == 1
+        first.assert_not_called()
+
+    def test_completed_unlock_command_restarts_timer(self) -> None:
+        mgr, _, _ = _make_manager(on_demand=True, assume_locked_after=40)
+        with patch(_CALL_LATER, return_value=MagicMock()) as later:
+            mgr.on_coordinator_update(False)
+            first = mgr._assume_locked_timer
+            mgr._transition_state = LockTransitionState.UNLOCKING
+            mgr.on_coordinator_update(False)  # unlock echo, state unchanged
+        assert later.call_count == 2
+        first.assert_called_once()  # old timer cancelled
+
+    def test_locked_cancels_timer(self) -> None:
+        mgr, _, _ = _make_manager(on_demand=True, assume_locked_after=40)
+        with patch(_CALL_LATER, return_value=MagicMock()):
+            mgr.on_coordinator_update(False)
+            timer = mgr._assume_locked_timer
+            mgr.on_coordinator_update(True)
+        timer.assert_called_once()
+        assert mgr._assume_locked_timer is None
+
+    async def test_lock_command_cancels_timer(self) -> None:
+        mgr, _, _ = _make_manager(
+            on_demand=True, assume_locked_after=40, is_locked_return=False
+        )
+        with patch(_CALL_LATER, return_value=MagicMock()):
+            mgr.on_coordinator_update(False)
+            timer = mgr._assume_locked_timer
+            await mgr.lock()
+        timer.assert_called_once()
+
+    def test_expiry_assumes_locked_and_attributes_auto(self) -> None:
+        hook = MagicMock()
+        mgr, _, device = _make_manager(
+            on_demand=True,
+            assume_locked_after=40,
+            is_locked_return=False,
+            on_assumed_state=hook,
+        )
+        device.assume_lock_state.return_value = True
+        mgr._assume_locked_callback(None)
+        device.assume_lock_state.assert_called_once_with(47, True)
+        assert mgr.pending_action_source == ACTION_SOURCE_AUTO
+        hook.assert_called_once()
+
+    def test_expiry_skipped_during_transition(self) -> None:
+        hook = MagicMock()
+        mgr, _, device = _make_manager(
+            on_demand=True,
+            assume_locked_after=40,
+            is_locked_return=False,
+            on_assumed_state=hook,
+        )
+        mgr._transition_state = LockTransitionState.UNLOCKING
+        mgr._assume_locked_callback(None)
+        device.assume_lock_state.assert_not_called()
+        hook.assert_not_called()
+
+    def test_expiry_skipped_when_not_unlocked(self) -> None:
+        hook = MagicMock()
+        mgr, _, device = _make_manager(
+            on_demand=True,
+            assume_locked_after=40,
+            is_locked_return=None,
+            on_assumed_state=hook,
+        )
+        mgr._assume_locked_callback(None)
+        device.assume_lock_state.assert_not_called()
+        hook.assert_not_called()
+
+    def test_cleanup_cancels_timer(self) -> None:
+        mgr, _, _ = _make_manager(on_demand=True, assume_locked_after=40)
+        with patch(_CALL_LATER, return_value=MagicMock()):
+            mgr.on_coordinator_update(False)
+            timer = mgr._assume_locked_timer
+        mgr.cleanup()
+        timer.assert_called_once()

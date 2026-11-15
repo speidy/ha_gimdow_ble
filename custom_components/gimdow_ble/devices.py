@@ -304,6 +304,7 @@ class GimdowBLEData:
     unknown_state_action: str = DEFAULT_UNKNOWN_STATE_ACTION
     transition_timeout: int = 60
     auto_lock_delay_fallback: int = DEFAULT_AUTO_LOCK_DELAY_FALLBACK
+    assume_locked_after: int = 0
 
 
 @dataclass

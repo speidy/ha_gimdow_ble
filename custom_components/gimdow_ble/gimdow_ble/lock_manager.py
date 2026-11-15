@@ -22,7 +22,7 @@ from homeassistant.components.persistent_notification import (
     async_create as pn_async_create,
     async_dismiss as pn_async_dismiss,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later
 
 from ..const import (
@@ -94,6 +94,9 @@ class LockManagerConfig:
     # connection), so commands are always sent instead of being skipped when the
     # lock already appears to be in the target state.
     on_demand: bool = False
+    # On-demand mode only: seconds after the lock was last seen unlocked to
+    # assume its own auto-lock has re-locked it (0 = off).
+    assume_locked_after: int = 0
 
 
 class PendingLockIntent:
@@ -166,6 +169,7 @@ class GimdowBLELockManager:
         hass: HomeAssistant,
         config: LockManagerConfig,
         on_state_change: Callable[[], None],
+        on_assumed_state: Callable[[], None] | None = None,
     ) -> None:
         self._device = device
         self._hass = hass
@@ -198,6 +202,11 @@ class GimdowBLELockManager:
 
         # Last state HA had for this lock (updated on every coordinator update)
         self._last_known_state: bool | None = None
+
+        # On-demand "assume locked" timer and the hook that republishes the
+        # entity state once the assumption is applied.
+        self._assume_locked_timer = None
+        self._on_assumed_state = on_assumed_state or on_state_change
 
     # ------------------------------------------------------------------
     # Properties consumed by the HA entity
@@ -370,7 +379,12 @@ class GimdowBLELockManager:
         or the transition timeout fires.
         """
         if is_locked is not None:
+            prev_state = self._last_known_state
             self._last_known_state = is_locked
+            unlock_completed = (
+                is_locked is False
+                and self._transition_state == LockTransitionState.UNLOCKING
+            )
             target_reached = (
                 (
                     is_locked is False
@@ -385,6 +399,20 @@ class GimdowBLELockManager:
             if target_reached:
                 self._transition_state = LockTransitionState.IDLE
                 self._cancel_transition_timeout()
+            if is_locked is False:
+                # Count from the moment the lock was seen unlocking: a fresh
+                # unlock (state change or a completed unlock command) restarts
+                # the countdown; other DP updates leave a running one alone.
+                if (
+                    unlock_completed
+                    or prev_state is not False
+                    or self._assume_locked_timer is None
+                ):
+                    self._start_assume_locked_timer()
+            else:
+                self._stop_assume_locked_timer()
+        else:
+            self._stop_assume_locked_timer()
 
         # Safety net: if unlocked with no timer and auto-lock is on, restart timer
         if (
@@ -485,6 +513,7 @@ class GimdowBLELockManager:
         # Cancel the auto-lock timer only now that we're definitely sending a command.
         # Cancelling before the door-open check would lose the timer on blocked calls.
         self.stop_auto_lock_timer()
+        self._stop_assume_locked_timer()
 
         # --- Normal lock ---
         self._pending.clear()
@@ -858,6 +887,48 @@ class GimdowBLELockManager:
             self.start_auto_lock_timer()
 
     # ------------------------------------------------------------------
+    # On-demand: assume the lock's own auto-lock re-locked it
+    # ------------------------------------------------------------------
+
+    def _start_assume_locked_timer(self) -> None:
+        """(Re)start the countdown after which the lock is assumed locked."""
+        self._stop_assume_locked_timer()
+        delay = self._config.assume_locked_after
+        if not self._config.on_demand or delay <= 0:
+            return
+        _LOGGER.debug(
+            "[%s] Assume-locked: timer started for %ss.", self._device.address, delay
+        )
+        self._assume_locked_timer = async_call_later(
+            self._hass, delay, self._assume_locked_callback
+        )
+
+    def _stop_assume_locked_timer(self) -> None:
+        if self._assume_locked_timer:
+            self._assume_locked_timer()
+            self._assume_locked_timer = None
+
+    @callback
+    def _assume_locked_callback(self, _now) -> None:
+        """Timer expired: show the lock as locked (by its own auto-lock)."""
+        self._assume_locked_timer = None
+        if self._transition_state != LockTransitionState.IDLE:
+            # A command is in flight; its echo (or timeout) decides the state.
+            return
+        if self._device.get_lock_state(self._config.state_dp_id) is not False:
+            return
+        if not self._device.assume_lock_state(self._config.state_dp_id, True):
+            return
+        _LOGGER.info(
+            "[%s] Assuming the lock re-locked itself (auto-lock): no state "
+            "report for %ss since it was unlocked.",
+            self._device.address,
+            self._config.assume_locked_after,
+        )
+        self._pending_action_source = ACTION_SOURCE_AUTO
+        self._on_assumed_state()
+
+    # ------------------------------------------------------------------
     # Transition Timeout Timer
     # ------------------------------------------------------------------
 
@@ -924,6 +995,7 @@ class GimdowBLELockManager:
     def cleanup(self) -> None:
         """Cancel all background tasks. Call from async_will_remove_from_hass."""
         self.stop_auto_lock_timer()
+        self._stop_assume_locked_timer()
         self._cancel_transition_timeout()
         if self._resolution_active:
             self._resolution_task.cancel()

@@ -127,8 +127,12 @@ class GimdowBLELock(GimdowBLEEntity, LockEntity):
                 get_auto_lock=lambda: data.virtual_auto_lock,
                 has_door_sensor=data.has_door_sensor,
                 on_demand=device.on_demand,
+                assume_locked_after=data.assume_locked_after,
             ),
             on_state_change=self.async_write_ha_state,
+            # Run the full coordinator-update path so attribution ("Auto Lock")
+            # and the manager's bookkeeping see the assumed state.
+            on_assumed_state=self._handle_coordinator_update,
         )
 
         _LOGGER.debug(

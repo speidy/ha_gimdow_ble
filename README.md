@@ -196,6 +196,8 @@ How the integration uses the Bluetooth link to the lock.
 
 On Demand mirrors how the stock Tuya gateway firmware handles this lock: it treats it as a low-power device that is never connected proactively, connects only when a command is queued or when the lock raises the connect-request flag in its advert (bit 0 of the Tuya manufacturer-data flags byte, which lives in the scan response, so the scanner must scan actively), and takes online status from adverts. The integration does the same. The lock itself ends an idle session after 60 s.
 
+**Assume Locked After (seconds)** *(On Demand only, default 0 = off)*: the lock's own auto-lock normally runs after the link has closed, so it is never reported and the lock keeps showing *unlocked*. Set this to the auto-lock delay configured in the lock plus a few seconds, and the integration shows the lock as *locked* (changed by "Auto Lock") that long after it was last seen unlocked. This is an assumption, not a reading; the next real state report from the lock replaces it.
+
 ---
 
 ## Entities

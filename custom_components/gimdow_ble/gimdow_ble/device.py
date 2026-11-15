@@ -322,6 +322,20 @@ class GimdowBLEDevice(GimdowBLEConnection, GimdowBLEProtocol):
         finally:
             remove_cb()
 
+    def assume_lock_state(self, state_dp_id: int, locked: bool) -> bool:
+        """Overwrite the cached lock-state DP with an assumed value.
+
+        Nothing is sent to the lock and no callbacks fire. Used in on-demand
+        mode, where the lock's own auto-lock is never reported; the next real
+        DP push from the lock overwrites the assumption. Returns False when the
+        DP has never been reported (nothing to overwrite).
+        """
+        dp = self._datapoints[state_dp_id]
+        if not dp:
+            return False
+        dp._value = not locked  # DP True = Unlocked
+        return True
+
     def get_lock_state(self, state_dp_id: int) -> bool | None:
         """Return True=Locked, False=Unlocked, None=Unknown."""
         dp = self._datapoints[state_dp_id]

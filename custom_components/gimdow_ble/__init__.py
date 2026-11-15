@@ -23,6 +23,7 @@ from .const import (
     CONF_CONNECTION_MODE,
     CONNECTION_MODE_ON_DEMAND,
     DEFAULT_CONNECTION_MODE,
+    CONF_ASSUME_LOCKED_AFTER,
     CONF_AUTO_LOCK_DELAY_FALLBACK,
     CONF_DOOR_SENSOR,
     DEFAULT_AUTO_LOCK_DELAY_FALLBACK,
@@ -125,6 +126,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: GimdowBLEConfigEntry) ->
                 CONF_AUTO_LOCK_DELAY_FALLBACK, DEFAULT_AUTO_LOCK_DELAY_FALLBACK
             )
         ),
+        assume_locked_after=int(entry.options.get(CONF_ASSUME_LOCKED_AFTER, 0)),
     )
     entry.runtime_data = data
 

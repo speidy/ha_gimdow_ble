@@ -220,6 +220,28 @@ class TestGetLockState:
         assert dev.get_lock_state(47) is True
 
 
+class TestAssumeLockState:
+    def test_overwrites_cached_state(self) -> None:
+        dev = _make_device()
+        dev._datapoints.get_or_create(47, GimdowBLEDataPointType.DT_BOOL, True)
+        assert dev.assume_lock_state(47, True) is True
+        assert dev.get_lock_state(47) is True
+
+    def test_noop_when_dp_absent(self) -> None:
+        dev = _make_device()
+        assert dev.assume_lock_state(47, True) is False
+        assert dev.get_lock_state(47) is None
+
+    def test_real_push_overwrites_assumption(self) -> None:
+        dev = _make_device()
+        dev._datapoints.get_or_create(47, GimdowBLEDataPointType.DT_BOOL, True)
+        dev.assume_lock_state(47, True)
+        dev._datapoints._update_from_device(
+            47, 0, 0, GimdowBLEDataPointType.DT_BOOL, True
+        )
+        assert dev.get_lock_state(47) is False
+
+
 # ---------------------------------------------------------------------------
 # TestSetBleDeviceAndAdvertisement
 # ---------------------------------------------------------------------------

@@ -48,6 +48,11 @@ DEFAULT_CONNECTION_MODE: Final = CONNECTION_MODE_PERSISTENT
 # battery and other status DPs).
 ON_DEMAND_REFRESH_INTERVAL: Final = 60 * 60
 DEFAULT_AUTO_LOCK_DELAY_FALLBACK: Final = 30
+# On-demand mode: the lock's own auto-lock happens while no link is up and is
+# never reported, so the shown state stays "unlocked". When > 0, assume the lock
+# re-locked itself this many seconds after it was last seen unlocked.
+CONF_ASSUME_LOCKED_AFTER: Final = "assume_locked_after"
+DEFAULT_ASSUME_LOCKED_AFTER: Final = 0
 UNKNOWN_STATE_ACTION_CONFIRM_LAST: Final = "confirm_last"
 UNKNOWN_STATE_ACTION_DOUBLE_ON_ACTION: Final = "double_on_action"
 UNKNOWN_STATE_ACTION_FORCE_LOCK_TWICE: Final = "force_lock_twice"
@@ -61,6 +66,7 @@ OPTIONS_ONLY_KEYS: Final = frozenset(
         CONF_TRANSITION_TIMEOUT,
         CONF_AUTO_LOCK_DELAY_FALLBACK,
         CONF_CONNECTION_MODE,
+        CONF_ASSUME_LOCKED_AFTER,
     }
 )
 
